@@ -12,11 +12,16 @@ public class UploadDirectoryInitializer {
     @Value("${upload.path}")
     private String uploadPath;
 
+    @Value("${upload.user-path}")
+    private String uploadUserPath;
+
     @PostConstruct
     public void init() {
         File directory = new File(uploadPath);
-        if (!directory.exists()) {
+        File userDirectory = new File(uploadUserPath);
+        if (!directory.exists() || !userDirectory.exists()) {
             directory.mkdirs();
+            userDirectory.mkdirs();
         }
     }
 }
