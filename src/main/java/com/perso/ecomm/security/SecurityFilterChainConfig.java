@@ -1,6 +1,7 @@
 package com.perso.ecomm.security;
 
 import com.perso.ecomm.JWT.JWTAuthenticationFilter;
+import com.perso.ecomm.exception.DelegatedAuthEntryPoint;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationProvider;
@@ -32,7 +33,7 @@ public class SecurityFilterChainConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, DelegatedAuthEntryPoint delegatedAuthEntryPoint) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
@@ -40,14 +41,15 @@ public class SecurityFilterChainConfig {
                         (auth) ->
                                 auth
                                         .requestMatchers("/images/**").permitAll()
-                                        .requestMatchers("user/**").permitAll()
-                                        .requestMatchers("role/**").permitAll()
+                                        .requestMatchers("/user/**").permitAll()
+                                        .requestMatchers("/role/**").permitAll()
                                         .requestMatchers("/error").permitAll()
                                         .anyRequest().authenticated()
                 ).sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authenticationProvider(authenticationProvider)
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
-                .exceptionHandling(e -> e.authenticationEntryPoint(authenticationEntryPoint));
+                .exceptionHandling(e -> e.authenticationEntryPoint(delegatedAuthEntryPoint))
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
 
         return http.build();
     }
