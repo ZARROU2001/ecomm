@@ -13,23 +13,31 @@ import com.perso.ecomm.role.ERole;
 import com.perso.ecomm.role.Role;
 import com.perso.ecomm.role.RoleRepository;
 import com.perso.ecomm.util.FileUploadUtil;
+import io.micrometer.common.util.internal.logging.InternalLogger;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.transaction.Transactional;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
+import java.util.UUID;
 
 
 @Service
+@Slf4j
 public class UserService {
 
 
@@ -41,6 +49,9 @@ public class UserService {
     private final RoleRepository roleRepository;
 
     final String FOLDER_PATH = "src/main/resources/static/images";
+
+    @Value("${upload.user-path}")
+    private String userImagePath;
 
 
     public UserService(AuthenticationManager authenticationManager, JWTUtil jwtUtil, PasswordEncoder passwordEncoder, UserRepository userRepository, RoleRepository roleRepository) {
@@ -69,20 +80,59 @@ public class UserService {
     }
 
     @Transactional
-    public User updateUser(Long userId, UserUpdateRequest userUpdateRequest) throws IOException {
+    public User updateUser(Long userId, UserUpdateRequest request) throws IOException {
+
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException(" User with id " + userId + " doesn't exist "));
-        user.setUsername(userUpdateRequest.getUsername());
-        user.setEmail(userUpdateRequest.getEmail());
-        user.setFirstName(userUpdateRequest.getFirstName());
-        user.setLastName(userUpdateRequest.getLastName());
-        if(userUpdateRequest.getImageUrl() != null){
-            FileUploadUtil.saveFile(FOLDER_PATH, userUpdateRequest.getImageUrl().getOriginalFilename(), userUpdateRequest.getImageUrl());
-            user.setImageUrl("http://localhost:8080/images/" + userUpdateRequest.getImageUrl().getOriginalFilename());
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("User with id " + userId + " doesn't exist"));
+
+        user.setUsername(request.getUsername());
+        user.setEmail(request.getEmail());
+        user.setFirstName(request.getFirstName());
+        user.setLastName(request.getLastName());
+
+        MultipartFile image = request.getImageUrl();
+
+        if (image != null && !image.isEmpty()) {
+
+            if (!image.getContentType().startsWith("image/")) {
+                throw new IllegalArgumentException("Only image files are allowed");
+            }
+
+            // 1️⃣ Delete old image if not default
+            deleteOldUserImageIfNeeded(user.getImageUrl());
+
+            // 2️⃣ Generate safe filename
+            String extension = StringUtils.getFilenameExtension(image.getOriginalFilename());
+            String fileName = UUID.randomUUID() + "." + extension;
+
+            // 3️⃣ Save new image
+            FileUploadUtil.saveFile(userImagePath, fileName, image);
+
+            // 4️⃣ Update image URL
+            user.setImageUrl("/images/users/" + fileName);
         }
 
         return user;
     }
+
+
+    private void deleteOldUserImageIfNeeded(String imageUrl) {
+
+        if (imageUrl == null || imageUrl.contains("default-image.png")) {
+            return; // never delete default image
+        }
+
+        try {
+            String fileName = Paths.get(imageUrl).getFileName().toString();
+            Path filePath = Paths.get(userImagePath).resolve(fileName);
+            Files.deleteIfExists(filePath);
+        } catch (IOException e) {
+            // log warning, do NOT fail transaction
+            log.warn("Could not delete old user image: {}", imageUrl);
+        }
+    }
+
 
     @Transactional
     public void changePassword(Long userId, changePasswordRequest passwordRequest) {
@@ -110,18 +160,32 @@ public class UserService {
     }
 
     public User registerNewUser(SignupRequest signupRequest) throws IOException {
+
         if (userRepository.existsByUsername(signupRequest.getUsername())) {
-            throw new DuplicateResourceException("Error: Username is already taken!");
-        }
-        if (userRepository.existsByEmail(signupRequest.getEmail())) {
-            throw new DuplicateResourceException("Error: email is already taken!");
-        }
-        String a = "";
-        if (signupRequest.getImageUrl() != null) {
-            FileUploadUtil.saveFile(FOLDER_PATH, signupRequest.getImageUrl().getOriginalFilename(), signupRequest.getImageUrl());
-            a = signupRequest.getImageUrl().getOriginalFilename();
+            throw new DuplicateResourceException("Username already taken");
         }
 
+        if (userRepository.existsByEmail(signupRequest.getEmail())) {
+            throw new DuplicateResourceException("Email already taken");
+        }
+
+        String imageUrl = "/images/users/default-image.png";
+
+        MultipartFile image = signupRequest.getImageUrl();
+
+        if (image != null && !image.isEmpty()) {
+
+            if (!image.getContentType().startsWith("image/")) {
+                throw new IllegalArgumentException("Only image files are allowed");
+            }
+
+            String extension = StringUtils.getFilenameExtension(image.getOriginalFilename());
+            String fileName = UUID.randomUUID() + "." + extension;
+
+            FileUploadUtil.saveFile(userImagePath, fileName, image);
+
+            imageUrl = "/images/users/" + fileName;
+        }
 
         User user = new User(
                 signupRequest.getEmail(),
@@ -129,29 +193,26 @@ public class UserService {
                 signupRequest.getFirstName(),
                 signupRequest.getLastName(),
                 signupRequest.getUsername(),
-                "http://localhost:8080/images/users/default-image.png" + a);
+                imageUrl
+        );
 
+        Role role = resolveRole(signupRequest.getRole());
+        user.setRole(role);
 
-        String strRoles = signupRequest.getRole();
-        Role roles;
+        return userRepository.save(user);
+    }
 
-        if (strRoles == null) {
-            roles = roleRepository.findRoleByName(ERole.ROLE_USER)
-                    .orElseThrow(() -> new ResourceNotFoundException("Error: Role User not found."));
-        } else if (strRoles.equals("admin")) {
-            roles = roleRepository.findRoleByName(ERole.ROLE_ADMIN)
-                    .orElseThrow(() -> new ResourceNotFoundException("Error: Role admin not found."));
-        } else if (strRoles.equals("moderator")) {
-            roles = roleRepository.findRoleByName(ERole.ROLE_MODERATOR)
-                    .orElseThrow(() -> new ResourceNotFoundException("Error: Role moderator not found."));
-        } else {
-            roles = roleRepository.findRoleByName(ERole.ROLE_USER)
-                    .orElseThrow(() -> new ResourceNotFoundException("Error: Role User not found."));
+    private Role resolveRole(String roleName) {
+        if ("admin".equalsIgnoreCase(roleName)) {
+            return roleRepository.findRoleByName(ERole.ROLE_ADMIN)
+                    .orElseThrow(() -> new ResourceNotFoundException("Role admin not found"));
         }
-
-        user.setRole(roles);
-        userRepository.save(user);
-        return user;
+        if ("moderator".equalsIgnoreCase(roleName)) {
+            return roleRepository.findRoleByName(ERole.ROLE_MODERATOR)
+                    .orElseThrow(() -> new ResourceNotFoundException("Role moderator not found"));
+        }
+        return roleRepository.findRoleByName(ERole.ROLE_USER)
+                .orElseThrow(() -> new ResourceNotFoundException("Role user not found"));
     }
 
     public String logoutUser() {

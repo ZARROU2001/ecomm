@@ -7,19 +7,24 @@ import com.perso.ecomm.productCategory.ProductCategoryRepository;
 import com.perso.ecomm.util.FileUploadUtil;
 import jakarta.persistence.EntityNotFoundException;
 import jakarta.transaction.Transactional;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.List;
+import java.util.UUID;
 
 @Service
 public class ProductService {
-    final String FOLDER_PATH = "src/main/resources/static/images/";
+    @Value("${upload.path}")
+    private String uploadPath;
     private final ProductRepository productRepository;
     private final ProductCategoryRepository productCategoryRepository;
 
@@ -69,12 +74,26 @@ public class ProductService {
 
     public Product registerNewProduct(ProductRequest productRequest) throws IOException {
 
-        ProductCategory productCategory = productCategoryRepository.findProductCategoriesByCategoryName(productRequest.getCategory())
-                .orElseThrow(() -> new ResourceNotFoundException("Category not Found"));
+        ProductCategory productCategory = productCategoryRepository
+                .findProductCategoriesByCategoryName(productRequest.getCategory())
+                .orElseThrow(() -> new ResourceNotFoundException("Category not found"));
 
-        FileUploadUtil.saveFile(FOLDER_PATH, productRequest.getImageUrl().getOriginalFilename(), productRequest.getImageUrl());
+        MultipartFile image = productRequest.getImageUrl();
 
-        double discountPercent = calculateDiscountPercent(productRequest.getPriceBeforeDiscount(), productRequest.getPriceAfterDiscount());
+
+        if (image.isEmpty() || !image.getContentType().startsWith("image/")) {
+            throw new IllegalArgumentException("Invalid image file");
+        }
+
+        String extension = StringUtils.getFilenameExtension(image.getOriginalFilename());
+        String fileName = UUID.randomUUID() + "." + extension;
+
+        FileUploadUtil.saveFile(uploadPath, fileName, image);
+
+        double discountPercent = calculateDiscountPercent(
+                productRequest.getPriceBeforeDiscount(),
+                productRequest.getPriceAfterDiscount()
+        );
 
         Product product = new Product(
                 productCategory,
@@ -83,14 +102,14 @@ public class ProductService {
                 productRequest.getPriceAfterDiscount(),
                 productRequest.getPriceBeforeDiscount(),
                 productRequest.getStockQuantity(),
-                "http://localhost:8080/images/" + productRequest.getImageUrl().getOriginalFilename()
+                "/images/" + fileName
         );
 
         product.setDiscountPercent(discountPercent);
-        productRepository.save(product);
 
-        return product;
+        return productRepository.save(product);
     }
+
 
     @Transactional
     public Product updateProduct(Long productId, ProductRequest productRequest) throws IOException {
@@ -107,7 +126,7 @@ public class ProductService {
         product.setStockQuantity(productRequest.getStockQuantity());
         product.setCategory(productCategory);
         if (productRequest.getImageUrl()!=null){
-            FileUploadUtil.saveFile(FOLDER_PATH, productRequest.getImageUrl().getOriginalFilename(), productRequest.getImageUrl());
+            FileUploadUtil.saveFile(uploadPath, productRequest.getImageUrl().getOriginalFilename(), productRequest.getImageUrl());
             product.setImageUrl("http://localhost:8080/images/" + productRequest.getImageUrl().getOriginalFilename());
         }
         return product;
@@ -115,7 +134,7 @@ public class ProductService {
 
     public byte[] getImage(Long id) throws IOException {
         Product product = productRepository.findById(id).get();
-        String filePath = FOLDER_PATH + product.getImageUrl();
+        String filePath = uploadPath + product.getImageUrl();
 
         return Files.readAllBytes(new File(filePath).toPath());
     }
